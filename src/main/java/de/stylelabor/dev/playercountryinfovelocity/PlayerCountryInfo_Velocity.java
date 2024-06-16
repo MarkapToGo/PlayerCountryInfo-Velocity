@@ -7,6 +7,7 @@ import com.google.gson.stream.JsonReader;
 import com.google.inject.Inject;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.PostLoginEvent;
+import com.google.gson.JsonParseException;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.proxy.Player;
@@ -151,16 +152,15 @@ public class PlayerCountryInfo_Velocity {
             } else {
                 data = new HashMap<>();
             }
-
             // Check if player's UUID already exists in the file
             if (data.containsKey(player.getUniqueId().toString())) {
                 // Player already exists, so skip the API call
                 return;
             }
 
-            String country;
-            String city;
-            String countryCode;
+            String country = "";
+            String city = "";
+            String countryCode = "";
 
             // Check if the IP address is localhost
             if (ip.equals("127.0.0.1") || ip.equals("0:0:0:0:0:0:0:1")) {
@@ -178,25 +178,47 @@ public class PlayerCountryInfo_Velocity {
                 Scanner scanner = new Scanner(new InputStreamReader(responseStream));
                 String response = scanner.useDelimiter("\\A").next();
 
-                // Parse the response to get the country, city, and country code
-                Gson gson = new Gson();
-                JsonReader reader = new JsonReader(new StringReader(response));
-                reader.setLenient(true);
-                JsonElement jsonElement = gson.fromJson(reader, JsonElement.class);
+                // Try to parse the response as JSON
+                try {
+                    Gson gson = new Gson();
+                    JsonReader reader = new JsonReader(new StringReader(response));
+                    reader.setLenient(true);
+                    JsonElement jsonElement = gson.fromJson(reader, JsonElement.class);
 
-                if (jsonElement.isJsonObject()) {
-                    JsonObject jsonObject = jsonElement.getAsJsonObject();
-                    country = jsonObject.get("country").getAsString();
-                    city = jsonObject.get("city").getAsString();
-                    try {
-                        countryCode = jsonObject.get("countryCode").getAsString();
-                    } catch (Exception e) {
-                        countryCode = "XX";
+                    if (jsonElement.isJsonObject()) {
+                        JsonObject jsonObject = jsonElement.getAsJsonObject();
+                        country = jsonObject.get("country").getAsString();
+                        city = jsonObject.get("city").getAsString();
+                        try {
+                            countryCode = jsonObject.get("countryCode").getAsString();
+                        } catch (Exception e) {
+                            countryCode = "XX";
+                        }
+                    } else {
+                        throw new JsonParseException("Not a JSON Object");
                     }
-                } else {
-                    // Handle the case where the response is not a JSON object
-                    logger.error("API response is not a JSON object: {}", response);
-                    return;
+                } catch (JsonParseException e) {
+                    // If the response is not JSON, try to parse it as plain text
+                    String[] lines = response.split("\n");
+                    for (String line : lines) {
+                        String[] parts = line.split(": ");
+                        if (parts.length == 2) {
+                            String key = parts[0].trim();
+                            String value = parts[1].trim();
+
+                            switch (key) {
+                                case "Country":
+                                    country = value;
+                                    break;
+                                case "City":
+                                    city = value;
+                                    break;
+                                case "Country Code":
+                                    countryCode = value;
+                                    break;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -224,8 +246,6 @@ public class PlayerCountryInfo_Velocity {
                 scheduleTask(player, countryCode, 10, TimeUnit.SECONDS);
                 scheduleTask(player, countryCode, 5, TimeUnit.MINUTES);
                 scheduleTask(player, countryCode, 10, TimeUnit.MINUTES);
-
-
             }
         } catch (IOException e) {
             logger.error("Failed to make API call", e);
