@@ -87,9 +87,9 @@ public class PlayerCountryInfo_Velocity {
 
     private Map<String, String> createPlayerData(String country, String city, String ip, String countryCode) {
         Map<String, String> playerData = new HashMap<>();
-        playerData.put("Country", country);
-        playerData.put("City", city);
-        playerData.put("IP", ip);
+         playerData.put("Country", country);
+        // playerData.put("City", city);
+        // playerData.put("IP", ip);
         playerData.put("CountryCode", countryCode);
         return playerData;
     }
