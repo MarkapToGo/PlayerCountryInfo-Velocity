@@ -87,7 +87,7 @@ public class PlayerCountryInfo_Velocity {
 
     private Map<String, String> createPlayerData(String country, String city, String ip, String countryCode) {
         Map<String, String> playerData = new HashMap<>();
-         playerData.put("Country", country);
+        playerData.put("Country", country);
         // playerData.put("City", city);
         // playerData.put("IP", ip);
         playerData.put("CountryCode", countryCode);
@@ -169,6 +169,33 @@ public class PlayerCountryInfo_Velocity {
         }).delay(delay, unit).schedule();
     }
 
+    private void updatePlayerSuffix(Player player, String countryCode) {
+        // Get the LuckPerms API
+        LuckPerms api = LuckPermsProvider.get();
+
+        // Get the LuckPerms User for the player
+        User user = api.getUserManager().getUser(player.getUniqueId());
+
+        if (user != null) {
+            // Remove old suffix nodes
+            user.data().clear(node -> node instanceof SuffixNode);
+
+            // Get the server the player is currently on
+            String serverName = player.getCurrentServer()
+                    .map(serverConnection -> serverConnection.getServerInfo().getName())
+                    .orElse("Unknown");
+
+            // Create a suffix node with a space before the country code and server name
+            SuffixNode suffixNode = SuffixNode.builder(" [" + countryCode + "] | &3" + serverName, 100).build();
+
+            // Add the new suffix node to the user
+            user.data().add(suffixNode);
+
+            // Save the user data
+            api.getUserManager().saveUser(user);
+        }
+    }
+
     @Subscribe
     public void onPlayerLogin(PostLoginEvent event) {
         Player player = event.getPlayer();
@@ -189,13 +216,33 @@ public class PlayerCountryInfo_Velocity {
             if (file.exists()) {
                 InputStream inputStream = new FileInputStream(file);
                 data = yaml.load(inputStream);
+                if (data == null) {
+                    data = new HashMap<>();
+                }
             } else {
                 data = new HashMap<>();
             }
+
             // Check if player's UUID already exists in the file
-            if (data.containsKey(player.getUniqueId().toString())) {
-                // Player already exists, so skip the API call
-                return;
+            String playerUUIDString = player.getUniqueId().toString();
+            if (data.containsKey(playerUUIDString)) {
+                // Player already exists, use the stored country code
+                Map<String, String> playerData = (Map<String, String>) data.get(playerUUIDString);
+                String storedCountryCode = playerData.get("CountryCode");
+
+                if (storedCountryCode != null && !storedCountryCode.isEmpty()) {
+                    logger.info("Using stored country code '{}' for player {}", storedCountryCode, player.getUsername());
+
+                    // Update the country code in the map
+                    playerCountryCodes.put(playerUUID, storedCountryCode);
+
+                    // Update the player's suffix with the stored country code
+                    updatePlayerSuffix(player, storedCountryCode);
+
+                    return;
+                } else {
+                    logger.info("Stored country code for player {} is null or empty, fetching new one", player.getUsername());
+                }
             }
 
             String country = "";
@@ -218,6 +265,9 @@ public class PlayerCountryInfo_Velocity {
                 Scanner scanner = new Scanner(new InputStreamReader(responseStream));
                 String response = scanner.useDelimiter("\\A").next();
 
+                // Log the full API response for debugging
+                logger.info("API Response for IP {}: {}", ip, response);
+
                 // Try to parse the response as JSON
                 try {
                     Gson gson = new Gson();
@@ -237,73 +287,106 @@ public class PlayerCountryInfo_Velocity {
                     // If the response is not JSON, try to parse it as plain text
                     String[] lines = response.split("\n");
                     for (String line : lines) {
-                        String[] parts = line.split(": ");
-                        if (parts.length == 2) {
-                            String key = parts[0].trim();
-                            String value = parts[1].trim();
+                        if (line.contains(": ")) {
+                            String[] parts = line.split(": ", 2);  // Limit to 2 parts to handle values with colons
+                            if (parts.length == 2) {
+                                String key = parts[0].trim();
+                                String value = parts[1].trim();
 
-                            switch (key) {
-                                case "Country":
-                                    country = value;
-                                    break;
-                                case "City":
-                                    city = value;
-                                    break;
-                                case "Country Code":
-                                    countryCode = value;
-                                    break;
+                                // Log the key-value pair for debugging
+                                logger.info("Parsed from API - Key: '{}', Value: '{}'", key, value);
+
+                                switch (key) {
+                                    case "Country":
+                                        country = value;
+                                        break;
+                                    case "City":
+                                        city = value;
+                                        break;
+                                    case "Country Code":
+                                        countryCode = value;
+                                        break;
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // Load country codes from data-country.json
-            Map<String, String> countryCodes = loadCountryCodes();
-            countryCode = countryCodes.getOrDefault(country, "XX");
+            // Log extracted data
+            logger.info("Extracted Country: '{}'", country);
 
-            // Debug: Print the country and country code
-            logger.info("Country: {}", country);
-            logger.info("Country Code: {}", countryCode);
+            // Only look up country code if we don't already have one from the API
+            if (countryCode.isEmpty() && !country.isEmpty()) {
+                // Load country codes from data-country.json
+                Map<String, String> countryCodes = loadCountryCodes();
 
-            Map<String, String> playerData = createPlayerData(country, city, ip, countryCode);
+                // Check if the country exists in the mapping
+                if (countryCodes.containsKey(country)) {
+                    countryCode = countryCodes.get(country);
+                    logger.info("Found country code '{}' for '{}'", countryCode, country);
+                } else {
+                    // Try case-insensitive lookup
+                    boolean found = false;
+                    for (Map.Entry<String, String> entry : countryCodes.entrySet()) {
+                        if (entry.getKey().equalsIgnoreCase(country)) {
+                            countryCode = entry.getValue();
+                            logger.info("Found country code '{}' for '{}' using case-insensitive match", countryCode, country);
+                            found = true;
+                            break;
+                        }
+                    }
 
-            // Add the current system time to the playerData map
-            playerData.put("LastJoinTime", String.valueOf(System.currentTimeMillis()));
-
-            data.put(player.getUniqueId().toString(), playerData);
-
-            FileWriter writer = new FileWriter(file);
-            yaml.dump(data, writer);
-
-            // Store the country code in the map
-            playerCountryCodes.put(playerUUID, countryCode);
-
-
-            // Get the LuckPerms API
-            LuckPerms api = LuckPermsProvider.get();
-
-            // Get the LuckPerms User for the player
-            User user = api.getUserManager().getUser(player.getUniqueId());
-
-            if (user != null) {
-                // Remove old suffix nodes
-                user.data().clear(node -> node instanceof SuffixNode);
-
-                // Get the server the player is currently on
-                String serverName = player.getCurrentServer().map(serverConnection -> serverConnection.getServerInfo().getName()).orElse("Unknown");
-
-                // Create a suffix node with a space before the country code and server name
-                SuffixNode suffixNode = SuffixNode.builder(" [" + countryCode + "] | &3" + serverName, 100).build();
-
-                // Add the new suffix node to the user
-                user.data().add(suffixNode);
-
-                // Save the user data
-                api.getUserManager().saveUser(user);
+                    if (!found) {
+                        countryCode = "XX";
+                        logger.info("No country code found for '{}', using default 'XX'", country);
+                    }
+                }
             }
 
+            // Check if we already have a stored country code that's not "XX"
+            String existingCountryCode = null;
+            if (data.containsKey(playerUUIDString)) {
+                Map<String, String> playerData = (Map<String, String>) data.get(playerUUIDString);
+                existingCountryCode = playerData.get("CountryCode");
+            }
 
+            // Only use new country code if:
+            // 1. We don't have an existing country code, or
+            // 2. The new country code is not "XX", or
+            // 3. The existing country code is "XX"
+            if (existingCountryCode == null || !countryCode.equals("XX") || existingCountryCode.equals("XX")) {
+                // Debug: Print the country and country code
+                logger.info("Final Country: {}", country);
+                logger.info("Final Country Code: {}", countryCode);
+
+                Map<String, String> playerData = createPlayerData(country, city, ip, countryCode);
+
+                // Add the current system time to the playerData map
+                playerData.put("LastJoinTime", String.valueOf(System.currentTimeMillis()));
+
+                data.put(playerUUIDString, playerData);
+
+                // Write updated data to file
+                try (FileWriter writer = new FileWriter(file)) {
+                    yaml.dump(data, writer);
+                }
+
+                // Store the country code in the map
+                playerCountryCodes.put(playerUUID, countryCode);
+
+                // Update the player's suffix
+                updatePlayerSuffix(player, countryCode);
+            } else {
+                logger.info("Keeping existing country code '{}' for player {} (new code was '{}')",
+                        existingCountryCode, player.getUsername(), countryCode);
+
+                // Ensure the country code is in the playerCountryCodes map
+                playerCountryCodes.put(playerUUID, existingCountryCode);
+
+                // Update the player's suffix with the existing country code
+                updatePlayerSuffix(player, existingCountryCode);
+            }
 
         } catch (IOException e) {
             logger.error("Failed to make API call", e);
